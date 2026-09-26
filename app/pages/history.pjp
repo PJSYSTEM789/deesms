@@ -1,0 +1,184 @@
+<?php
+    
+if (!defined('BASE_PATH') && !isset($_SESSION['user_id'])) {
+    exit('No direct script access allowed');
+}
+?>
+
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ประวัติการส่ง SMS - SMS Gateway API</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Google Fonts (Sarabun) -->
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { 
+            background-color: #f8f9fa; 
+            font-family: 'Sarabun', sans-serif; 
+        }
+        .card { 
+            border: none; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05); 
+        }
+    </style>
+</head>
+<body class="py-4">
+
+<div class="container-lg">
+    <!-- Header / Navigation Bar -->
+    <div class="row mb-4 align-items-center">
+        <div class="col-md-8">
+            <h3 class="fw-bold text-primary mb-0">
+                <i class="fa-solid fa-clock-rotate-left me-2"></i>ประวัติการส่ง SMS
+            </h3>
+            <p class="text-muted small mb-0">รายการประวัติการส่ง SMS ทั้งหมดผ่านระบบ</p>
+        </div>
+     <!--   <div class="col-md-4 text-md-end mt-3 mt-md-0">
+            <button class="btn btn-outline-primary fw-bold" onclick="window.location.href='index.php'">
+                <i class="fa-solid fa-paper-plane me-1"></i> ไปหน้าส่ง SMS
+            </button>
+        </div>-->
+    </div>
+
+    <!-- Main Card -->
+    <div class="card p-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="fw-bold mb-0">รายการประวัติการส่ง</h5>
+            <button class="btn btn-sm btn-outline-primary fw-bold" onclick="loadHistory()">
+                <i class="fa-solid fa-arrows-rotate me-1"></i> รีเฟรชข้อมูล
+            </button>
+        </div>
+
+        <!-- Filter วันที่ -->
+        <div class="row g-2 mb-3">
+            <div class="col-md-4">
+                <input type="date" id="filterStartDate" class="form-control form-control-sm" placeholder="วันที่เริ่มต้น">
+            </div>
+            <div class="col-md-4">
+                <input type="date" id="filterEndDate" class="form-control form-control-sm" placeholder="วันที่สิ้นสุด">
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-sm btn-secondary w-100 fw-bold" onclick="loadHistory()">
+                    <i class="fa-solid fa-filter me-1"></i> กรองข้อมูล
+                </button>
+            </div>
+        </div>
+
+        <!-- ตารางแสดงประวัติการส่ง (ตัดคอลัมน์เครดิตออก) -->
+        <div class="table-responsive">
+            <table class="table table-hover align-middle" style="font-size: 0.9rem;">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 180px;">เวลาที่ส่ง</th>
+                        <th style="width: 140px;">เบอร์ผู้รับ</th>
+                        <th style="width: 150px;">Sender Name</th>
+                        <th>ข้อความ SMS</th>
+                        <th style="width: 140px;" class="text-center">สถานะ Gateway</th>
+                    </tr>
+                </thead>
+                <tbody id="historyTableBody">
+                    <tr>
+                        <td colspan="5" class="text-center text-muted py-4">
+                            <i class="fa-solid fa-spinner fa-spin me-2"></i>กำลังโหลดข้อมูลประวัติ...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Bootstrap 5 JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    loadHistory();
+});
+
+// ฟังก์ชันดึงข้อมูลประวัติการส่งจาก API
+async function loadHistory() {
+    const tbody = document.getElementById('historyTableBody');
+    const startDate = document.getElementById('filterStartDate').value;
+    const endDate = document.getElementById('filterEndDate').value;
+
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="5" class="text-center text-muted py-4">
+                <i class="fa-solid fa-spinner fa-spin me-2"></i>กำลังดึงข้อมูล...
+            </td>
+        </tr>
+    `;
+
+    try {
+        let url = `api/get_history.php?start_date=${startDate}&end_date=${endDate}`;
+        let response = await fetch(url);
+        let result = await response.json();
+
+        if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+            tbody.innerHTML = '';
+            result.data.forEach(item => {
+                let statusStr = item.gateway_status || item.status || 'FAILED';
+                let isSuccess = statusStr.toUpperCase() === 'SUCCESS';
+                
+                let statusBadge = isSuccess 
+                    ? '<span class="badge bg-success"><i class="fa-solid fa-check me-1"></i>สำเร็จ</span>' 
+                    : `<span class="badge bg-secondary">${statusStr}</span>`;
+
+                let senderName = item.sender?.name || item.sender_name || item.send_from || '-';
+                let phone = item.recipient || item.phone || '-';
+                let message = item.message || '-';
+                let createdAt = item.created_at || item.send_at || '-';
+
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${createdAt}</td>
+                        <td class="fw-bold text-dark">${phone}</td>
+                        <td><span class="badge bg-light text-dark border">${senderName}</span></td>
+                        <td>${escapeHtml(message)}</td>
+                        <td class="text-center">${statusBadge}</td>
+                    </tr>
+                `;
+            });
+        } else {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center text-muted py-4">
+                        ไม่พบประวัติการส่งในเงื่อนไขที่เลือก
+                    </td>
+                </tr>
+            `;
+        }
+    } catch (e) {
+        console.error("Load history error:", e);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-center text-danger py-4">
+                    เกิดข้อผิดพลาดในการโหลดประวัติการส่ง
+                </td>
+            </tr>
+        `;
+    }
+}
+
+// ฟังก์ชันช่วยป้องกันการแสดงผล XSS
+function escapeHtml(text) {
+    if (!text) return '';
+    return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+</script>
+
+</body>
+</html>
