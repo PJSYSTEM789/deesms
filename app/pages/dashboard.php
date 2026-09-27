@@ -1,14 +1,13 @@
 <?php
 /**
  * ไฟล์: pages/dashboard.php
- * วัตถุประสงค์: แสดงผล Dashboard สรุปภาพรวมระบบ ยอดเครดิต และสถิติการส่ง SMS
+ * วัตถุประสงค์: แสดงผล Dashboard สรุปภาพรวมการส่ง SMS จริง และยอดเครดิตคงเหลือ
  */
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// ตรวจสอบสิทธิ์การเข้าถึง
 if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     echo '<div class="alert alert-danger m-4">คุณไม่มีสิทธิ์เข้าถึงหน้านี้ กรุณาล็อกอินก่อนใช้งาน</div>';
     return;
@@ -32,7 +31,7 @@ if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     <!-- Cards Stats Overview -->
     <div class="row g-3 mb-4">
         <!-- Credit API Card -->
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card border-0 shadow-sm p-3 bg-primary text-white h-100" style="border-radius: 12px;">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="small opacity-75">เครดิต API คงเหลือ</span>
@@ -46,7 +45,7 @@ if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
         </div>
 
         <!-- Total Sent Card -->
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card border-0 shadow-sm p-3 bg-white h-100" style="border-radius: 12px;">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="text-muted small">ปริมาณการส่งทั้งหมด</span>
@@ -58,26 +57,14 @@ if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
         </div>
 
         <!-- Success Sent Card -->
-        <div class="col-md-3">
+        <div class="col-md-4">
             <div class="card border-0 shadow-sm p-3 bg-white h-100" style="border-radius: 12px;">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="text-muted small">ส่งสำเร็จ</span>
                     <i class="fa-solid fa-circle-check text-success fs-4"></i>
                 </div>
                 <h3 class="fw-bold text-success mb-0" id="lblSuccessSent">0</h3>
-                <small class="text-muted mt-2 d-block">ส่งถึง API Gateway จริง</small>
-            </div>
-        </div>
-
-        <!-- Failed / Throttled Card -->
-        <div class="col-md-3">
-            <div class="card border-0 shadow-sm p-3 bg-white h-100" style="border-radius: 12px;">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <span class="text-muted small">จำลองส่ง / ไม่สำเร็จ</span>
-                    <i class="fa-solid fa-filter text-warning fs-4"></i>
-                </div>
-                <h3 class="fw-bold text-warning mb-0" id="lblFailedSent">0</h3>
-                <small class="text-muted mt-2 d-block">ตามเกณฑ์ Volume Routing</small>
+                <small class="text-muted mt-2 d-block">ส่งถึง SMS Gateway สำเร็จ</small>
             </div>
         </div>
     </div>
@@ -115,7 +102,6 @@ async function loadDashboardData() {
     let apiStatus      = document.getElementById('lblApiStatus');
     let totalSent       = document.getElementById('lblTotalSent');
     let successSent     = document.getElementById('lblSuccessSent');
-    let failedSent      = document.getElementById('lblFailedSent');
     let tblLogs         = document.getElementById('tblRecentLogs');
 
     creditBalance.innerHTML = `<i class="fa-solid fa-spinner fa-spin fs-5"></i>`;
@@ -125,7 +111,6 @@ async function loadDashboardData() {
         let data = await response.json();
 
         if (data.status === 'success') {
-            // แสดงผลยอดเครดิต
             creditBalance.innerText = `${data.credit_balance} THB`;
             if (data.api_status === 'online') {
                 apiStatus.innerHTML = `<i class="fa-solid fa-circle-check me-1"></i>เชื่อมต่อ API Gateway สำเร็จ`;
@@ -133,12 +118,9 @@ async function loadDashboardData() {
                 apiStatus.innerHTML = `<i class="fa-solid fa-circle-exclamation me-1"></i>ไม่สามารถดึงยอดเครดิตได้`;
             }
 
-            // แสดงผลสถิติ
             totalSent.innerText   = data.stats.total_sent.toLocaleString();
             successSent.innerText = data.stats.success.toLocaleString();
-            failedSent.innerText  = data.stats.failed.toLocaleString();
 
-            // แสดงตาราง Log ล่าสุด
             if (data.recent_logs && data.recent_logs.length > 0) {
                 tblLogs.innerHTML = '';
                 data.recent_logs.forEach(log => {
@@ -148,8 +130,8 @@ async function loadDashboardData() {
                             <td class="fw-bold font-monospace">${escapeHtml(log.phone_number)}</td>
                             <td>${escapeHtml(log.message)}</td>
                             <td>
-                                <span class="badge ${isSuccess ? 'bg-success' : 'bg-warning'}">
-                                    ${isSuccess ? 'สำเร็จ' : 'จำลอง/ไม่สำเร็จ'}
+                                <span class="badge ${isSuccess ? 'bg-success' : 'bg-danger'}">
+                                    ${isSuccess ? 'สำเร็จ' : 'ล้มเหลว'}
                                 </span>
                             </td>
                             <td class="small text-muted">${escapeHtml(log.created_at)}</td>
