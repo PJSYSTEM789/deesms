@@ -1,38 +1,58 @@
 <?php
 /**
  * ไฟล์: api/get_senders.php
- * วัตถุประสงค์: ดึง Sender Name ทั้งหมดจาก Dee SMS API (GET)
+ * วัตถุประสงค์: ดึงรายการ Sender Names ที่ได้รับอนุมัติจาก Dee SMS API
  */
 
 header('Content-Type: application/json; charset=utf-8');
 error_reporting(0);
-ini_set('display_errors', 0);
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 1. Security Check: ตรวจสอบการเข้าสู่ระบบ
-if (!isset($_SESSION['user_id'])) {
+// 1. ตรวจสอบสิทธิ์การเข้าใช้งาน
+if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     http_response_code(401);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Unauthorized: กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน'
-    ], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
     exit;
 }
 
-// 2. ตั้งค่า API Key และ Endpoint URL
-$apiKey  = '921a0dfd1e78655369019ba60e0c2b9bc91c9a58c99321a5dadb7d49cae320a3';
-$baseUrl = 'https://api.deesms.net/api/v1/senders';
+if (file_exists(__DIR__ . '/../config.php')) {
+    require_once __DIR__ . '/../config.php';
+}
 
-// รับค่า Query Parameter (ถ้ามี)
-$limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100;
-$page  = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+if (!function_exists('safeGetSetting')) {
+    function safeGetSetting($key, $default = '') {
+        global $pdo;
+        if (function_exists('getSetting')) {
+            return getSetting($key, $default);
+        }
+        if (isset($pdo)) {
+            try {
+                $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = ? LIMIT 1");
+                $stmt->execute([$key]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                return $row ? $row['setting_value'] : $default;
+            } catch (PDOException $e) {
+                return $default;
+            }
+        }
+        return $default;
+    }
+}
 
-$apiUrl = $baseUrl . '?limit=' . $limit . '&page=' . $page;
+$baseUrl = safeGetSetting('api_url', 'https://api.deesms.net');
+$apiKey  = safeGetSetting('api_key', '');
 
-// 3. เริ่มต้น cURL Request (GET)
+if (empty($apiKey)) {
+    echo json_encode(['status' => 'error', 'message' => 'ยังไม่ได้ตั้งค่า API Key']);
+    exit;
+}
+
+// 2. ยิง cURL ไปยัง Endpoint /v1/senders
+$apiUrl = rtrim($baseUrl, '/') . '/v1/senders';
+
 $ch = curl_init();
 curl_setopt_array($ch, [
     CURLOPT_URL            => $apiUrl,
@@ -44,35 +64,16 @@ curl_setopt_array($ch, [
     ],
 ]);
 
-$response  = curl_exec($ch);
-$httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlError = curl_error($ch);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
-if ($curlError) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'cURL Error: ' . $curlError
-    ], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-$responseData = json_decode($response, true);
-
-// 4. ประมวลผล Response ตาม Documentation
-if ($httpCode === 200 && isset($responseData['data'])) {
-    echo json_encode([
-        'success' => true,
-        'senders' => $responseData['data'],
-        'message' => $responseData['message'] ?? 'ดึงข้อมูลผู้ส่งสำเร็จ'
-    ], JSON_UNESCAPED_UNICODE);
+if ($httpCode === 200) {
+    $resData = json_decode($response, true);
+    // แปลงโครงสร้างข้อมูล Sender ให้เป็น Array เรียบง่าย
+    $senders = $resData['senders'] ?? $resData['data'] ?? $resData ?? [];
+    echo json_encode(['status' => 'success', 'data' => $senders], JSON_UNESCAPED_UNICODE);
 } else {
-    http_response_code($httpCode >= 400 ? $httpCode : 400);
-    echo json_encode([
-        'success' => false,
-        'senders' => [],
-        'message' => $responseData['message'] ?? ('HTTP Error Status: ' . $httpCode)
-    ], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['status' => 'error', 'message' => 'ไม่สามารถดึงข้อมูล Sender Name ได้'], JSON_UNESCAPED_UNICODE);
 }
 exit;
