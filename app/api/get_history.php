@@ -1,135 +1,102 @@
 <?php
 /**
  * ไฟล์: api/get_history.php
- * วัตถุประสงค์: ดึงข้อมูลประวัติการส่ง SMS รวมจากทั้ง API จริง และ MySQL Database
+ * วัตถุประสงค์: ดึงข้อมูลประวัติการส่ง SMS จาก Dee SMS API (Send History Endpoint)
  */
 
 header('Content-Type: application/json; charset=utf-8');
+error_reporting(0);
+ini_set('display_errors', 0);
 
-// ดึงไฟล์ตั้งค่ากลางเข้ามาใช้งาน
-require_once __DIR__ . '/../config.php';
-
-// รับค่าจาก Query Parameters
-$startDate = $_GET['start_date'] ?? '';
-$endDate   = $_GET['end_date'] ?? '';
-$search    = trim($_GET['search'] ?? '');
-
-$allLogs = [];
-
-// ==========================================
-// ส่วนที่ 1: ดึงข้อมูลจากฐานข้อมูล MySQL
-// ==========================================
-try {
-    $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_TIMEOUT            => 5
-    ]);
-
-    $sql = "SELECT id, recipient, message, sender_name, status, status_note, credit_used, sent_at FROM sms_logs WHERE 1=1";
-    $params = [];
-
-    if (!empty($startDate)) {
-        $sql .= " AND DATE(sent_at) >= ?";
-        $params[] = $startDate;
-    }
-    if (!empty($endDate)) {
-        $sql .= " AND DATE(sent_at) <= ?";
-        $params[] = $endDate;
-    }
-    if (!empty($search)) {
-        $sql .= " AND (recipient LIKE ? OR message LIKE ?)";
-        $params[] = "%$search%";
-        $params[] = "%$search%";
-    }
-
-    $sql .= " ORDER BY sent_at DESC LIMIT 500";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $dbLogs = $stmt->fetchAll();
-
-    foreach ($dbLogs as $row) {
-        $allLogs[] = [
-            'id'          => 'DB_' . $row['id'],
-            'source'      => 'DATABASE',
-            'sent_at'     => $row['sent_at'],
-            'recipient'   => $row['recipient'],
-            'sender_name' => $row['sender_name'] ?? '-',
-            'message'     => $row['message'],
-            'credit_used' => (int)$row['credit_used'],
-            'status'      => $row['status'],
-            'status_note' => $row['status_note'] ?? ''
-        ];
-    }
-} catch (PDOException $e) {
-    error_log("Database Error in get_history.php: " . $e->getMessage());
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
 
-// ==========================================
-// ส่วนที่ 2: ดึงข้อมูลจาก SMS Gateway API จริง
-// ==========================================
-$queryParams = ['page' => 1, 'limit' => 100];
-if (!empty($startDate)) $queryParams['start_date'] = $startDate;
-if (!empty($endDate))   $queryParams['end_date']   = $endDate;
+// 1. Security Check: ตรวจสอบการเข้าสู่ระบบ
+if (!isset($_SESSION['user_id'])) {
+    http_response_code(401);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Unauthorized: กรุณาล็อกอินเข้าสู่ระบบก่อนใช้งาน'
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
+// 2. รับและตรวจสอบ Query Parameters
+$startDate = isset($_GET['start_date']) ? trim($_GET['start_date']) : null;
+$endDate   = isset($_GET['end_date']) ? trim($_GET['end_date']) : null;
+$page      = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+$limit     = isset($_GET['limit']) ? (int)$_GET['limit'] : 25;
+
+if ($limit > 5000) {
+    $limit = 5000;
+}
+
+// 3. ตั้งค่า API Key และ Endpoint URL
+$apiKey  = '921a0dfd1e78655369019ba60e0c2b9bc91c9a58c99321a5dadb7d49cae320a3';
+$baseUrl = 'https://api.deesms.net/api/v1/history'; // URL Endpoint สำหรับ Send History
+
+$queryParams = [
+    'page'  => $page,
+    'limit' => $limit
+];
+
+if (!empty($startDate)) {
+    $queryParams['start_date'] = $startDate;
+}
+if (!empty($endDate)) {
+    $queryParams['end_date'] = $endDate;
+}
+
+$apiUrl = $baseUrl . '?' . http_build_query($queryParams);
+
+// 4. เริ่มต้น cURL Request (GET)
 $ch = curl_init();
 curl_setopt_array($ch, [
-    CURLOPT_URL            => DEESMS_BASE_URL . '?' . http_build_query($queryParams),
+    CURLOPT_URL            => $apiUrl,
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT        => 10,
+    CURLOPT_TIMEOUT        => 15,
     CURLOPT_HTTPHEADER     => [
-        'Accept: application/json',
-        'api-key: ' . DEESMS_API_KEY
-    ]
+        'api-key: ' . trim($apiKey),
+        'Accept: application/json'
+    ],
 ]);
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$response  = curl_exec($ch);
+$httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlError = curl_error($ch);
 curl_close($ch);
 
-if ($httpCode === 200 && $response) {
-    $apiRes = json_decode($response, true);
-    $apiItems = $apiRes['data'] ?? [];
-
-    foreach ($apiItems as $item) {
-        $phone   = $item['recipient'] ?? '';
-        $msgText = $item['message'] ?? '';
-        
-        if (!empty($search)) {
-            $matchPhone   = mb_strpos($phone, $search) !== false;
-            $matchMessage = mb_strpos($msgText, $search) !== false;
-            if (!$matchPhone && !$matchMessage) {
-                continue;
-            }
-        }
-
-        $allLogs[] = [
-            'id'          => 'API_' . ($item['id'] ?? uniqid()),
-            'source'      => 'API',
-            'sent_at'     => $item['created_at'] ?? $item['send_at'] ?? date('Y-m-d H:i:s'),
-            'recipient'   => $phone,
-            'sender_name' => $item['sender']['name'] ?? $item['send_from'] ?? '-',
-            'message'     => $msgText,
-            'credit_used' => (int)($item['credit_used'] ?? 1),
-            'status'      => $item['gateway_status'] ?? $item['status'] ?? 'SUCCESS',
-            'status_note' => 'ส่งผ่าน Gateway API'
-        ];
-    }
-} else if ($curlError) {
-    error_log("cURL Error in get_history.php: " . $curlError);
+if ($curlError) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => 'cURL Error: ' . $curlError
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
-// ==========================================
-// ส่วนที่ 3: เรียงลำดับข้อมูลทั้งหมดตามเวลาล่าสุด (sent_at DESC)
-// ==========================================
-usort($allLogs, function ($a, $b) {
-    return strtotime($b['sent_at']) - strtotime($a['sent_at']);
-});
+$responseData = json_decode($response, true);
 
-// ส่งผลลัพธ์กลับเป็น JSON
-echo json_encode([
-    'success' => true,
-    'total'   => count($allLogs),
-    'data'    => $allLogs
-], JSON_UNESCAPED_UNICODE);
+// 5. ส่งผลลัพธ์กลับไปยัง Client
+if ($httpCode === 200) {
+    // กรณีข้อมูลอยู่ใน data
+    $historyData = $responseData['data'] ?? [];
+    
+    echo json_encode([
+        'success'    => true,
+        'data'       => $historyData,
+        'page'       => $responseData['page'] ?? $page,
+        'limit'      => $responseData['limit'] ?? $limit,
+        'total_item' => $responseData['total_item'] ?? count((array)$historyData),
+        'total_page' => $responseData['total_page'] ?? 1,
+        'message'    => $responseData['message'] ?? 'ดึงข้อมูลประวัติสำเร็จ'
+    ], JSON_UNESCAPED_UNICODE);
+} else {
+    http_response_code($httpCode >= 400 ? $httpCode : 400);
+    echo json_encode([
+        'success' => false,
+        'message' => $responseData['message'] ?? ('HTTP Error Status: ' . $httpCode)
+    ], JSON_UNESCAPED_UNICODE);
+}
+exit;
