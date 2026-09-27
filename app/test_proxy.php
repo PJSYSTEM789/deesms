@@ -10,7 +10,7 @@ header('Content-Type: text/html; charset=utf-8');
 $proxyUrl = 'https://deesms-proxy.psingtoroon.workers.dev/v1/profile/balance';
 
 // 2. ระบุ API Key ของคุณจาก Dee SMS (กรุณาเปลี่ยนเป็น API Key จริงของคุณ)
-$apiKey = 'YOUR_DEESMS_API_KEY_HERE'; 
+$apiKey = '921a0dfd1e78655369019ba60e0c2b9bc91c9a58c99321a5dadb7d49cae320a3'; 
 
 echo "<h2>🧪 ทดสอบการเชื่อมต่อ Dee SMS ผ่าน Cloudflare Worker Proxy</h2>";
 
