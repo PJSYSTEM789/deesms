@@ -1,39 +1,45 @@
 <?php
 // ================= ================= =================
-// ตั้งค่า PHP ป้องกัน Memory เต็มเวลาเจอเบอร์ปริมาณมาก
+// 1. ตั้งค่า ป้องกัน Error 500 บน Wasmer
 // ================= ================= =================
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-ini_set('memory_limit', '512M');
-set_time_limit(300);
+ini_set('memory_limit', '256M');
+
+// ฟังก์ชันดักจับ Raw Input รองรับ Wasmer / Edge Server
+function getRequestData() {
+    $data =$_POST;
+    if (empty($data)) {$raw = file_get_contents('php://input');
+        $json = json_decode($raw, true);
+        if (is_array($json)) {
+            $data =$json;
+        }
+    }
+    return $data;
+}
+
+$reqData = getRequestData();
 
 // ================= ================= =================
-// 1. ฟังก์ชันตรวจสอบค่ายเบอร์โทรศัพท์ (Prefix Check)
+// 2. ฟังก์ชันตรวจสอบค่ายเบอร์โทรศัพท์ (Prefix Check - No SQL)
 // ================= ================= =================
 function getCarrier($phoneInput) {
-    // ลบตัวอักษรที่ไม่ใช่ตัวเลขออกทั้งหมด
     $phone = preg_replace('/[^0-9]/', '', (string)$phoneInput);
     
-    // แปลงรหัสประเทศ +66 เป็น 0
     if (strpos($phone, '66') === 0) {
         $phone = '0' . substr($phone, 2);
     }
 
-    // ตรวจสอบความถูกต้องของเบอร์มือถือไทย (10 หลัก ขึ้นต้นด้วย 0)
     if (strlen($phone) !== 10 \vert{}\vert{} substr($phone, 0, 1) !== '0') {
         return ['status' => false, 'phone' => $phoneInput, 'carrier' => 'INVALID', 'carrier_name' => 'เบอร์ไม่ถูกต้อง'];
     }
 
-    $prefix3 = substr($phone, 0, 3);
-    
-    // หมวดหมู่ Prefix ของ AIS
-    $aisPrefixes = ['080', '081', '087', '089', '092', '093', '097', '098', '061', '062', '063', '065'];
+    $prefix3 = substr($phone, 0, 3);$aisPrefixes = ['080', '081', '087', '089', '092', '093', '097', '098', '061', '062', '063', '065'];
     if (in_array($prefix3,$aisPrefixes)) {
         return ['status' => true, 'phone' => $phone, 'carrier' => 'AIS', 'carrier_name' => 'AIS'];
     }
 
-    // หมวดหมู่ Prefix ของ TRUE / DTAC
     $truePrefixes = ['083', '084', '086', '091', '095', '096', '064', '099'];
     $dtacPrefixes = ['082', '085', '088', '090', '094', '066'];$otherName = 'ค่ายอื่นๆ';
     if (in_array($prefix3, $truePrefixes))$otherName = 'TRUE';
@@ -43,29 +49,28 @@ function getCarrier($phoneInput) {
 }
 
 // ================= ================= =================
-// 2. ระบบดาวน์โหลด CSV แยกไฟล์ (Download Handler)
+// 3. ระบบดาวน์โหลด CSV
 // ================= ================= =================
-if (isset($_POST['action']) &&$_POST['action'] === 'download_csv') {
-    $type =$_POST['download_type'] ?? '';
-    $rawPhones = json_decode($_POST['phones_data'] ?? '[]', true);
+if (isset($reqData['action']) &&$reqData['action'] === 'download_csv') {
+    $type =$reqData['download_type'] ?? '';
+    $rawPhones = json_decode($reqData['phones_data'] ?? '[]', true);
 
     if ($type === 'ais') {$filename = "ais_numbers_" . date('Ymd_His') . ".csv";
-        $filtered = array_filter($rawPhones, fn($item) =>$item['carrier'] === 'AIS');
+        $filtered = array_filter($rawPhones, fn($item) => ($item['carrier'] ?? '') === 'AIS');
     } else {
         $filename = "other_carriers_numbers_" . date('Ymd_His') . ".csv";
-        $filtered = array_filter($rawPhones, fn($item) => $item['carrier'] === 'OTHER' \vert{}\vert{}$item['carrier'] === 'INVALID');
+        $filtered = array_filter($rawPhones, fn($item) => (($item['carrier'] ?? '') === 'OTHER' \vert{}\vert{} ($item['carrier'] ?? '') === 'INVALID'));
     }
 
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     
     $output = fopen('php://output', 'w');
-    // เพิ่ม UTF-8 BOM รองรับภาษาไทยใน Microsoft Excel
     fputs($output, "\xEF\xBB\xBF");
     fputcsv($output, ['เบอร์โทรศัพท์', 'เครือข่าย']);
 
     foreach ($filtered as$row) {
-        fputcsv($output, [$row['phone'],$row['carrier_name']]);
+        fputcsv($output, [$row['phone'] ?? '',$row['carrier_name'] ?? '']);
     }
 
     fclose($output);
@@ -73,35 +78,50 @@ if (isset($_POST['action']) &&$_POST['action'] === 'download_csv') {
 }
 
 // ================= ================= =================
-// 3. API สำหรับประมวลผลเบอร์โทรศัพท์ผ่าน AJAX
+// 4. API ประมวลผลผ่าน AJAX (พร้อมดัก Error)
 // ================= ================= =================
-if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
+if (isset($reqData['action']) &&$reqData['action'] === 'process_numbers') {
     header('Content-Type: application/json; charset=utf-8');
-    $rawList = json_decode($_POST['numbers'] ?? '[]', true);$aisList = [];
-    $otherList = [];$summary = ['total' => 0, 'ais' => 0, 'others' => 0, 'invalid' => 0];
-
-    foreach ($rawList as$item) {
-        if (empty(trim((string)$item))) continue;
-        $summary['total']++;
-        
-        $res = getCarrier($item);
-        if (!$res['status']) {$summary['invalid']++;
-            $otherList[] =$res;
-        } elseif ($res['carrier'] === 'AIS') {$summary['ais']++;
-            $aisList[] =$res;
-        } else {
-            $summary['others']++;
-            $otherList[] =$res;
+    
+    try {
+        $rawList = json_decode($reqData['numbers'] ?? '[]', true);
+        if (!is_array($rawList)) {
+            throw new Exception("รูปแบบข้อมูลที่ส่งมาไม่ถูกต้อง");
         }
-    }
 
-    echo json_encode([
-        'status' => true,
-        'summary' => $summary,
-        'ais' => $aisList,
-        'others' => $otherList,
-        'all_processed' => array_merge($aisList,$otherList)
-    ], JSON_UNESCAPED_UNICODE);
+        $aisList = [];
+        $otherList = [];$summary = ['total' => 0, 'ais' => 0, 'others' => 0, 'invalid' => 0];
+
+        foreach ($rawList as$item) {
+            if (empty(trim((string)$item))) continue;
+            $summary['total']++;
+            
+            $res = getCarrier($item);
+            if (!$res['status']) {$summary['invalid']++;
+                $otherList[] =$res;
+            } elseif ($res['carrier'] === 'AIS') {$summary['ais']++;
+                $aisList[] =$res;
+            } else {
+                $summary['others']++;
+                $otherList[] =$res;
+            }
+        }
+
+        echo json_encode([
+            'status' => true,
+            'summary' => $summary,
+            'ais' => $aisList,
+            'others' => $otherList,
+            'all_processed' => array_merge($aisList,$otherList)
+        ], JSON_UNESCAPED_UNICODE);
+
+    } catch (Throwable $e) {
+        // ส่งข้อความ Error กลับมาให้หน้าเว็บ alert แสดงผลแทนที่จะปล่อยให้เป็น HTTP 500
+        echo json_encode([
+            'status' => false,
+            'error_msg' => 'PHP Error: ' . $e->getMessage() . ' ในบรรทัดที่ ' . $e->getLine()
+        ], JSON_UNESCAPED_UNICODE);
+    }
     exit;
 }
 ?>
@@ -111,8 +131,7 @@ if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบคัดกรองเบอร์โทรศัพท์ (AIS / ค่ายอื่น)</title>
-    <!-- SheetJS สำหรับอ่านไฟล์ XLSX, CSV และ Google Sheets -->
+    <title>ระบบคัดกรองเบอร์โทรศัพท์ (Wasmer Ready)</title>
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
@@ -310,19 +329,23 @@ async function processData() {
             return;
         }
 
-        const formData = new FormData();
-        formData.append('action', 'process_numbers');
-        formData.append('numbers', JSON.stringify(extractedNumbers));
+        // ส่งแบบ JSON Body เพื่อเลี่ยงปัญหา Wasmer ตัดค่า $_POST
+        const res = await fetch('index.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'process_numbers',
+                numbers: JSON.stringify(extractedNumbers)
+            })
+        });
 
-        const res = await fetch('index.php', { method: 'POST', body: formData });
         const result = await res.json();
-
         loading.style.display = 'none';
 
         if (result.status) {
             renderResults(result);
         } else {
-            alert('เกิดข้อผิดพลาดในการประมวลผลข้อมูล');
+            alert(result.error_msg || 'เกิดข้อผิดพลาดในการประมวลผลข้อมูล');
         }
 
     } catch (err) {
