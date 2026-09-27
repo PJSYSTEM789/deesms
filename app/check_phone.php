@@ -1,17 +1,17 @@
 <?php
 // ================= ================= =================
-// ตั้งค่า PHP ป้องกัน Error 500 (รองรับไฟล์เบอร์ขนาดใหญ่ & เปิดแสดง Error)
+// ตั้งค่า PHP ป้องกัน Memory เต็มเวลาเจอเบอร์ปริมาณมาก
 // ================= ================= =================
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-ini_set('memory_limit', '512M'); // เพิ่ม RAM สำหรับประมวลผลเบอร์จำนวนมาก
-set_time_limit(300);            // เพิ่มเวลาประมวลผลสูงสุด 5 นาที
+ini_set('memory_limit', '512M');
+set_time_limit(300);
 
 // ================= ================= =================
-// 1. ฟังก์ชันตรวจสอบค่ายเบอร์โทรศัพท์ (Prefix + MNP API)
+// 1. ฟังก์ชันตรวจสอบค่ายเบอร์โทรศัพท์ (Prefix Check)
 // ================= ================= =================
-function getCarrier($phoneInput, $useApi = false,$apiKey = '') {
+function getCarrier($phoneInput) {
     // ลบตัวอักษรที่ไม่ใช่ตัวเลขออกทั้งหมด
     $phone = preg_replace('/[^0-9]/', '', (string)$phoneInput);
     
@@ -25,42 +25,15 @@ function getCarrier($phoneInput, $useApi = false,$apiKey = '') {
         return ['status' => false, 'phone' => $phoneInput, 'carrier' => 'INVALID', 'carrier_name' => 'เบอร์ไม่ถูกต้อง'];
     }
 
-    // --- ออพชัน 1: ตรวจสอบผ่าน MNP / HLR Lookup API (หากเปิดใช้งาน) ---
-    if ($useApi && !empty($apiKey) && function_exists('curl_init')) {
-        $apiUrl = "https://api.sms-provider.com/hlr/lookup?phone=" . $phone;
-        
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL,$apiUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer " . $apiKey]);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 2);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode === 200 &&$response) {
-            $apiData = json_decode($response, true);
-            $network = strtoupper($apiData['network'] ?? '');
-            
-            if (strpos($network, 'AIS') !== false) {
-                return ['status' => true, 'phone' => $phone, 'carrier' => 'AIS', 'carrier_name' => 'AIS (MNP API)'];
-            } elseif (!empty($network)) {
-                return ['status' => true, 'phone' => $phone, 'carrier' => 'OTHER', 'carrier_name' =>$network . ' (MNP API)'];
-            }
-        }
-    }
-
-    // --- ออพชัน 2: ตรวจสอบผ่าน Prefix ดั้งเดิม (No SQL) ---
     $prefix3 = substr($phone, 0, 3);
     
-    // หมวดหมู่ Prefix ดั้งเดิมของ AIS
+    // หมวดหมู่ Prefix ของ AIS
     $aisPrefixes = ['080', '081', '087', '089', '092', '093', '097', '098', '061', '062', '063', '065'];
     if (in_array($prefix3,$aisPrefixes)) {
         return ['status' => true, 'phone' => $phone, 'carrier' => 'AIS', 'carrier_name' => 'AIS'];
     }
 
-    // หมวดหมู่ Prefix ดั้งเดิมของ TRUE / DTAC
+    // หมวดหมู่ Prefix ของ TRUE / DTAC
     $truePrefixes = ['083', '084', '086', '091', '095', '096', '064', '099'];
     $dtacPrefixes = ['082', '085', '088', '090', '094', '066'];$otherName = 'ค่ายอื่นๆ';
     if (in_array($prefix3, $truePrefixes))$otherName = 'TRUE';
@@ -87,7 +60,7 @@ if (isset($_POST['action']) &&$_POST['action'] === 'download_csv') {
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     
     $output = fopen('php://output', 'w');
-    // เพิ่ม UTF-8 BOM เพื่อให้ภาษาไทยใน Excel ไม่เป็นต่างดาว
+    // เพิ่ม UTF-8 BOM รองรับภาษาไทยใน Microsoft Excel
     fputs($output, "\xEF\xBB\xBF");
     fputcsv($output, ['เบอร์โทรศัพท์', 'เครือข่าย']);
 
@@ -104,15 +77,14 @@ if (isset($_POST['action']) &&$_POST['action'] === 'download_csv') {
 // ================= ================= =================
 if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
     header('Content-Type: application/json; charset=utf-8');
-    $rawList = json_decode($_POST['numbers'] ?? '[]', true);
-    $useApi = isset($_POST['use_api']) && $_POST['use_api'] === '1';$apiKey = $_POST['api_key'] ?? '';$aisList = [];
+    $rawList = json_decode($_POST['numbers'] ?? '[]', true);$aisList = [];
     $otherList = [];$summary = ['total' => 0, 'ais' => 0, 'others' => 0, 'invalid' => 0];
 
     foreach ($rawList as$item) {
         if (empty(trim((string)$item))) continue;
         $summary['total']++;
         
-        $res = getCarrier($item, $useApi,$apiKey);
+        $res = getCarrier($item);
         if (!$res['status']) {$summary['invalid']++;
             $otherList[] =$res;
         } elseif ($res['carrier'] === 'AIS') {$summary['ais']++;
@@ -139,7 +111,7 @@ if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบคัดกรองค่ายเบอร์โทรศัพท์ (No SQL)</title>
+    <title>ระบบคัดกรองเบอร์โทรศัพท์ (AIS / ค่ายอื่น)</title>
     <!-- SheetJS สำหรับอ่านไฟล์ XLSX, CSV และ Google Sheets -->
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <style>
@@ -150,10 +122,7 @@ if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
         
         .upload-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 15px; }
         .upload-box { border: 2px dashed #007bff; padding: 20px; border-radius: 8px; text-align: center; background: #f8f9fa; }
-        input[type="text"], input[type="file"], input[type="password"] { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
-        
-        .api-option-box { background: #eef6ff; border: 1px solid #b8daff; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
-        .checkbox-label { font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
 
         .btn-main { background-color: #007bff; color: white; border: none; padding: 14px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 16px; width: 100%; margin-top: 10px; }
         .btn-main:hover { background-color: #0056b3; }
@@ -201,18 +170,8 @@ if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
             
             <div class="upload-box">
                 <h3>🌐 Google Sheets Link</h3>
-                <p style="font-size: 12px; color: #666; margin: 0;">(ตั้งค่าแชร์ไฟล์เป็น "ทุกคนที่มีลิงก์อ่านได้")</p>
+                <p style="font-size: 12px; color: #666; margin: 0;">(ตั้งค่าแชร์เป็น "ทุกคนที่มีลิงก์อ่านได้")</p>
                 <input type="text" id="gsheetUrl" placeholder="วางลิงก์ Google Sheets ที่นี่...">
-            </div>
-        </div>
-
-        <div class="api-option-box">
-            <label class="checkbox-label">
-                <input type="checkbox" id="useApiToggle" onchange="toggleApiInput()">
-                <span>⚡ เปิดใช้งานการตรวจสอบย้ายค่ายเบอร์เดิมผ่าน API (MNP / HLR Lookup)</span>
-            </label>
-            <div id="apiKeySection" style="display: none; margin-top: 10px;">
-                <input type="password" id="apiKeyInput" placeholder="กรอก API Key ของคุณที่นี่...">
             </div>
         </div>
 
@@ -281,11 +240,6 @@ if (isset($_POST['action']) &&$_POST['action'] === 'process_numbers') {
 </div>
 
 <script>
-function toggleApiInput() {
-    const isChecked = document.getElementById('useApiToggle').checked;
-    document.getElementById('apiKeySection').style.display = isChecked ? 'block' : 'none';
-}
-
 function formatGoogleSheetUrl(url) {
     const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
     if (match && match[1]) {
@@ -319,8 +273,6 @@ function extractPhoneNumbers(data) {
 async function processData() {
     const fileInput = document.getElementById('fileInput');
     const gsheetUrl = document.getElementById('gsheetUrl').value.trim();
-    const useApi = document.getElementById('useApiToggle').checked ? '1' : '0';
-    const apiKey = document.getElementById('apiKeyInput').value.trim();
     const loading = document.getElementById('loading');
     
     let extractedNumbers = [];
@@ -361,8 +313,6 @@ async function processData() {
         const formData = new FormData();
         formData.append('action', 'process_numbers');
         formData.append('numbers', JSON.stringify(extractedNumbers));
-        formData.append('use_api', useApi);
-        formData.append('api_key', apiKey);
 
         const res = await fetch('index.php', { method: 'POST', body: formData });
         const result = await res.json();
