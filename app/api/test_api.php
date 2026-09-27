@@ -2,7 +2,7 @@
 /**
  * ไฟล์: api/test_api.php
  * ตำแหน่งจัดเก็บ: api/test_api.php
- * วัตถุประสงค์: ตรวจสอบการเชื่อมต่อ API Gateway และดึงรายการ Sender Names พร้อมระบบจัดการ Error 403
+ * วัตถุประสงค์: ตรวจสอบการเชื่อมต่อ API Gateway ผ่าน Cloudflare Worker Proxy และดึงรายการ Sender Names
  */
 
 header('Content-Type: application/json; charset=utf-8');
@@ -24,7 +24,7 @@ if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     exit;
 }
 
-// 2. นำเข้าไฟล์ตั้งค่าระบบ/ฐานข้อมูล (ปรับ Path ตามโครงสร้างโปรเจกต์ของคุณ)
+// 2. นำเข้าไฟล์ตั้งค่าระบบ/ฐานข้อมูล
 if (file_exists(__DIR__ . '/../config.php')) {
     require_once __DIR__ . '/../config.php';
 }
@@ -50,9 +50,9 @@ if (!function_exists('safeGetSetting')) {
     }
 }
 
-// ดึงค่า URL และ Key ล่าสุดจากระบบ
-$baseUrl = safeGetSetting('api_url', 'https://api.deesms.net');
-$apiKey  = safeGetSetting('api_key', '');
+// 4. กำหนด URL สำหรับ Cloudflare Worker Proxy และดึง API Key
+$proxyDomain = 'https://deesms-proxy.psingtoroon.workers.dev';
+$apiKey      = safeGetSetting('api_key', '');
 
 if (empty($apiKey)) {
     echo json_encode([
@@ -63,15 +63,16 @@ if (empty($apiKey)) {
     exit;
 }
 
-// สร้าง URL Endpoint สำหรับดึงข้อมูล Sender Name
-$apiUrl = rtrim($baseUrl, '/') . '/api/v1/senders';
+// รวม Proxy URL เข้ากับ Endpoint สำหรับดึงข้อมูล Sender Name (/v1/senders)
+$apiUrl = rtrim($proxyDomain, '/') . '/v1/senders';
 
-// 4. ตั้งค่า cURL Request
+// 5. ตั้งค่า cURL Request ส่งผ่าน Proxy
 $ch = curl_init();
 curl_setopt_array($ch, [
     CURLOPT_URL            => $apiUrl,
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT        => 10,
+    CURLOPT_TIMEOUT        => 15,
+    CURLOPT_SSL_VERIFYPEER => false,
     CURLOPT_HTTPHEADER     => [
         'api-key: ' . trim($apiKey),
         'Accept: application/json',
@@ -84,7 +85,7 @@ $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlError = curl_error($ch);
 curl_close($ch);
 
-// 5. วิเคราะห์ข้อผิดพลาด และการส่งผลลัพธ์กลับ
+// 6. วิเคราะห์ข้อผิดพลาด และส่งผลลัพธ์กลับ
 if ($curlError) {
     echo json_encode([
         'status'  => 'error',
@@ -100,7 +101,7 @@ if ($httpCode === 403) {
         'status'  => 'error',
         'success' => false,
         'code'    => 403,
-        'message' => 'เกิดข้อผิดพลาด 403 Forbidden: API Key ไม่ถูกต้อง หรือ Sender Name นี้ยังไม่ได้รับอนุมัติให้ใช้งานในบัญชีของคุณ'
+        'message' => 'เกิดข้อผิดพลาด 403 Forbidden: API Key ไม่ถูกต้อง หรือ Sender Name นี้ยังไม่ได้รับอนุมัติให้ใช้งาน'
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -118,23 +119,26 @@ if ($httpCode === 401) {
 if ($httpCode === 200) {
     $data = json_decode($response, true);
     
-    // ตรวจสอบว่ามีรายการ Senders ส่งกลับมาหรือไม่
+    // ตรวจสอบรายการ Senders ที่ส่งกลับมาจาก API
     $sendersList = [];
-    if (isset($data['data']) && is_array($data['data'])) {
+    if (isset($data['senders']) && is_array($data['senders'])) {
+        $sendersList = $data['senders'];
+    } elseif (isset($data['data']) && is_array($data['data'])) {
         $sendersList = $data['data'];
     } elseif (is_array($data)) {
         $sendersList = $data;
     }
 
     echo json_encode([
-        'status'  => 'connected',
-        'success' => true,
-        'senders' => $sendersList,
-        'message' => 'เชื่อมต่อกับ API Gateway สำเร็จ'
+        'status'       => 'connected',
+        'success'      => true,
+        'proxy_target' => $apiUrl,
+        'senders'      => $sendersList,
+        'message'      => 'เชื่อมต่อกับ API Gateway ผ่าน Proxy สำเร็จ'
     ], JSON_UNESCAPED_UNICODE);
 } else {
     $errorData = json_decode($response, true);
-    $errorMessage = $errorData['message'] ?? ('HTTP Error Status Code: ' . $httpCode);
+    $errorMessage = $errorData['message'] ?? $errorData['description'] ?? ('HTTP Error Status Code: ' . $httpCode);
     
     echo json_encode([
         'status'  => 'error',
