@@ -1,7 +1,7 @@
 <?php
 /**
  * ไฟล์: api/get_dashboard_data.php
- * วัตถุประสงค์: ดึงข้อมูลสรุปสถิติจากฐานข้อมูล และยอดเครดิตจาก Dee SMS Gateway API
+ * วัตถุประสงค์: ดึงข้อมูลสรุปสถิติจาก DB และเช็กยอดเครดิตจาก Dee SMS API (/v1/profile/balance)
  */
 
 header('Content-Type: application/json; charset=utf-8');
@@ -22,7 +22,7 @@ if (file_exists(__DIR__ . '/../config.php')) {
     require_once __DIR__ . '/../config.php';
 }
 
-// 2. ฟังก์ชันช่วยดึงค่าการตั้งค่า
+// 2. ฟังก์ชันดึงค่าการตั้งค่า
 if (!function_exists('safeGetSetting')) {
     function safeGetSetting($key, $default = '') {
         global $pdo;
@@ -43,7 +43,7 @@ if (!function_exists('safeGetSetting')) {
     }
 }
 
-// 3. ดึงยอดเครดิตจาก Dee SMS API
+// 3. ดึงยอดเครดิตจาก Dee SMS API (/v1/profile/balance)
 $baseUrl = safeGetSetting('api_url', 'https://api.deesms.net');
 $apiKey  = safeGetSetting('api_key', '');
 
@@ -51,13 +51,13 @@ $creditBalance = '0.00';
 $apiStatus = 'offline';
 
 if (!empty($apiKey)) {
-    $apiUrl = rtrim($baseUrl, '/') . '/api/v1/credit'; // Endpoint เช็กเครดิตของ Gateway
+    $apiUrl = rtrim($baseUrl, '/') . '/v1/profile/balance';
     
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL            => $apiUrl,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 8,
+        CURLOPT_TIMEOUT        => 10,
         CURLOPT_HTTPHEADER     => [
             'api-key: ' . trim($apiKey),
             'Accept: application/json'
@@ -70,12 +70,13 @@ if (!empty($apiKey)) {
 
     if ($httpCode === 200) {
         $resData = json_decode($response, true);
-        $creditBalance = $resData['credit'] ?? $resData['data']['credit'] ?? $resData['balance'] ?? '0.00';
+        // ดึงค่า balance จาก Response Structure ของ Dee SMS
+        $creditBalance = $resData['balance'] ?? $resData['credit'] ?? $resData['data']['balance'] ?? '0.00';
         $apiStatus = 'online';
     }
 }
 
-// 4. สรุปสถิติจากฐานข้อมูล (กรณีมีตาราง sms_logs)
+// 4. สรุปสถิติจากฐานข้อมูล sms_logs
 $stats = [
     'total_sent' => 0,
     'success'    => 0,
@@ -85,7 +86,6 @@ $recentLogs = [];
 
 if (isset($pdo)) {
     try {
-        // นับจำนวนการส่งทั้งหมด
         $stmtStats = $pdo->query("SELECT 
             COUNT(*) as total,
             SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
@@ -98,15 +98,14 @@ if (isset($pdo)) {
             $stats['failed']     = (int)$rowStats['failed'];
         }
 
-        // ดึงรายการประวัติล่าสุด 5 รายการ
         $stmtLogs = $pdo->query("SELECT phone_number, message, status, created_at FROM sms_logs ORDER BY id DESC LIMIT 5");
         $recentLogs = $stmtLogs->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } catch (PDOException $e) {
-        // หากยังไม่มีตาราง sms_logs ให้ข้ามการดึงข้อมูลเพื่อป้องกัน Error
+        // กรณีตารางยังไม่ถูกสร้าง
     }
 }
 
-// 5. ส่งผลลัพธ์ JSON คืนกลับ Frontend
+// 5. ส่งผลลัพธ์ JSON
 echo json_encode([
     'status'         => 'success',
     'api_status'     => $apiStatus,
