@@ -1,7 +1,7 @@
 <?php
 /**
  * ไฟล์: api/get_senders.php
- * วัตถุประสงค์: ดึงรายการ Sender Names ที่ได้รับอนุมัติจาก Dee SMS API
+ * วัตถุประสงค์: ดึงรายการ Sender Names ผ่าน Cloudflare Worker Proxy
  */
 
 header('Content-Type: application/json; charset=utf-8');
@@ -11,7 +11,6 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 1. ตรวจสอบสิทธิ์การเข้าใช้งาน
 if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     http_response_code(401);
     echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
@@ -42,22 +41,22 @@ if (!function_exists('safeGetSetting')) {
     }
 }
 
-$baseUrl = safeGetSetting('api_url', 'https://api.deesms.net');
-$apiKey  = safeGetSetting('api_key', '');
+$proxyDomain = 'https://deesms-proxy.psingtoroon.workers.dev';
+$apiKey      = safeGetSetting('api_key', '');
 
 if (empty($apiKey)) {
     echo json_encode(['status' => 'error', 'message' => 'ยังไม่ได้ตั้งค่า API Key']);
     exit;
 }
 
-// 2. ยิง cURL ไปยัง Endpoint /v1/senders
-$apiUrl = rtrim($baseUrl, '/') . '/v1/senders';
+$apiUrl = rtrim($proxyDomain, '/') . '/v1/senders';
 
 $ch = curl_init();
 curl_setopt_array($ch, [
     CURLOPT_URL            => $apiUrl,
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_TIMEOUT        => 10,
+    CURLOPT_SSL_VERIFYPEER => false,
     CURLOPT_HTTPHEADER     => [
         'api-key: ' . trim($apiKey),
         'Accept: application/json'
@@ -70,7 +69,6 @@ curl_close($ch);
 
 if ($httpCode === 200) {
     $resData = json_decode($response, true);
-    // แปลงโครงสร้างข้อมูล Sender ให้เป็น Array เรียบง่าย
     $senders = $resData['senders'] ?? $resData['data'] ?? $resData ?? [];
     echo json_encode(['status' => 'success', 'data' => $senders], JSON_UNESCAPED_UNICODE);
 } else {
