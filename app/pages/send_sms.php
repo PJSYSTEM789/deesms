@@ -185,9 +185,76 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     });
 });
+// ปรับปรุงฟังก์ชันโหลด Sender Name ให้ดึงข้อมูลและแสดงผลได้อย่างถูกต้อง
+async function loadSenders() {
+    const select = document.getElementById('senderSelect');
+    select.innerHTML = '<option value="">-- กำลังโหลดรายการ... --</option>';
+
+    try {
+        let response = await fetch('api/get_senders.php');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        let result = await response.json();
+
+        // ดึง array ออกมาจากโครงสร้าง response ต่างๆ
+        let senderList = [];
+        if (Array.isArray(result)) {
+            senderList = result;
+        } else if (result.data && Array.isArray(result.data)) {
+            senderList = result.data;
+        } else if (result.senders && Array.isArray(result.senders)) {
+            senderList = result.senders;
+        }
+
+        select.innerHTML = '';
+
+        if (senderList.length > 0) {
+            let hasSelected = false;
+
+            senderList.forEach((sender, idx) => {
+                // รองรับทั้งแบบ Object และแบบ String แบบปกติ
+                let name = typeof sender === 'string' ? sender : (sender.name || sender.sender_name || sender.sender_id || sender.id);
+                let id = typeof sender === 'string' ? sender : (sender.id || sender.sender_id || name);
+                
+                // ตรวจสอบสถานะการใช้งาน (รองรับทั้ง boolean true/false, 1/"1", "true")
+                let isActive = true;
+                if (typeof sender === 'object' && sender.is_active !== undefined) {
+                    isActive = (sender.is_active === true || sender.is_active === 1 || sender.is_active === "1" || sender.is_active === "true");
+                }
+
+                if (isActive) {
+                    let opt = document.createElement('option');
+                    opt.value = id;
+                    let isDefault = typeof sender === 'object' && (sender.default === true || sender.default === 1 || sender.default === "1");
+                    opt.innerText = name + (isDefault ? ' (Default)' : '');
+                    
+                    if (isDefault || idx === 0) {
+                        opt.selected = true;
+                        hasSelected = true;
+                    }
+                    select.appendChild(opt);
+                }
+            });
+
+            if (!hasSelected && select.options.length > 0) {
+                select.options[0].selected = true;
+            }
+        } else {
+            // กรณีไม่พบข้อมูลในระบบ
+            select.innerHTML = '<option value="SMS_INFO">SMS_INFO (Default)</option>';
+        }
+    } catch (e) {
+        console.error("Load senders error:", e);
+        // Fallback กรณีเกิด Error ให้มีตัวเลือกเริ่มต้นเสมอ
+        select.innerHTML = '<option value="SMS_INFO">SMS_INFO (Default)</option>';
+    }
+}
 
 // 1. ดึงรายการ Sender Name จาก api/get_senders.php
-async function loadSenders() {
+/*async function loadSenders() {
     const select = document.getElementById('senderSelect');
     select.innerHTML = '<option value="">-- กำลังโหลดรายการ... --</option>';
 
@@ -236,7 +303,7 @@ async function loadSenders() {
         console.error("Load senders error:", e);
         select.innerHTML = '<option value="SMS_INFO">SMS_INFO (Default)</option>';
     }
-}
+}*/
 
 // 2. ดึงรายการเบอร์จากแต่ละ Tab (1 เบอร์ต่อ 1 บรรทัด / ไฟล์ .xlsx .csv / Google Sheets)
 async function getPhoneList() {
