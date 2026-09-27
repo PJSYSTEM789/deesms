@@ -1,7 +1,7 @@
 <?php
 /**
  * ไฟล์: api/get_dashboard_data.php
- * วัตถุประสงค์: ดึงข้อมูลสรุปสถิติจาก DB และเช็กยอดเครดิตจาก Dee SMS API (/v1/profile/balance)
+ * วัตถุประสงค์: ดึงข้อมูลสรุปสถิติจาก DB และเช็กยอดเครดิตผ่าน Cloudflare Worker Proxy
  */
 
 header('Content-Type: application/json; charset=utf-8');
@@ -11,7 +11,6 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 1. ตรวจสอบการล็อกอิน
 if (!isset($_SESSION['user_id']) && !isset($_SESSION['role'])) {
     http_response_code(401);
     echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
@@ -22,7 +21,6 @@ if (file_exists(__DIR__ . '/../config.php')) {
     require_once __DIR__ . '/../config.php';
 }
 
-// 2. ฟังก์ชันดึงค่าการตั้งค่า
 if (!function_exists('safeGetSetting')) {
     function safeGetSetting($key, $default = '') {
         global $pdo;
@@ -43,21 +41,23 @@ if (!function_exists('safeGetSetting')) {
     }
 }
 
-// 3. ดึงยอดเครดิตจาก Dee SMS API (/v1/profile/balance)
-$baseUrl = safeGetSetting('api_url', 'https://api.deesms.net');
-$apiKey  = safeGetSetting('api_key', '');
+// กำหนด URL ของ Cloudflare Worker Proxy
+$proxyDomain = 'https://deesms-proxy.psingtoroon.workers.dev';
+$apiKey      = safeGetSetting('api_key', '');
 
 $creditBalance = '0.00';
 $apiStatus = 'offline';
 
 if (!empty($apiKey)) {
-    $apiUrl = rtrim($baseUrl, '/') . '/v1/profile/balance';
+    // ส่ง Request ไปยัง Proxy URL + Path /v1/profile/balance
+    $apiUrl = rtrim($proxyDomain, '/') . '/v1/profile/balance';
     
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL            => $apiUrl,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 10,
+        CURLOPT_SSL_VERIFYPEER => false,
         CURLOPT_HTTPHEADER     => [
             'api-key: ' . trim($apiKey),
             'Accept: application/json'
@@ -70,18 +70,13 @@ if (!empty($apiKey)) {
 
     if ($httpCode === 200) {
         $resData = json_decode($response, true);
-        // ดึงค่า balance จาก Response Structure ของ Dee SMS
         $creditBalance = $resData['balance'] ?? $resData['credit'] ?? $resData['data']['balance'] ?? '0.00';
         $apiStatus = 'online';
     }
 }
 
-// 4. สรุปสถิติจากฐานข้อมูล sms_logs
-$stats = [
-    'total_sent' => 0,
-    'success'    => 0,
-    'failed'     => 0
-];
+// สรุปสถิติจาก DB
+$stats = ['total_sent' => 0, 'success' => 0, 'failed' => 0];
 $recentLogs = [];
 
 if (isset($pdo)) {
@@ -101,11 +96,10 @@ if (isset($pdo)) {
         $stmtLogs = $pdo->query("SELECT phone_number, message, status, created_at FROM sms_logs ORDER BY id DESC LIMIT 5");
         $recentLogs = $stmtLogs->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } catch (PDOException $e) {
-        // กรณีตารางยังไม่ถูกสร้าง
+        // ละเว้นกรณีตารางยังไม่ถูกสร้าง
     }
 }
 
-// 5. ส่งผลลัพธ์ JSON
 echo json_encode([
     'status'         => 'success',
     'api_status'     => $apiStatus,
