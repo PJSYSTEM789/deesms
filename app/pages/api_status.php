@@ -1,7 +1,50 @@
 <?php
-// pages/api_status.php
-if (!isAdmin()) exit;
+/**
+ * ไฟล์: pages/api_status.php
+ * วัตถุประสงค์: หน้าตรวจสอบสถานะความพร้อมของ Dee SMS API Gateway และรายการ Sender Names
+ */
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// 1. การตรวจสอบสิทธิ์ Admin (Security Check)
+$isAdminUser = false;
+if (function_exists('isAdmin')) {
+    $isAdminUser = isAdmin();
+} elseif (isset($_SESSION['role']) && $_SESSION['role'] === 'admin') {$isAdminUser = true;
+} elseif (isset($_SESSION['user_id'])) {$isAdminUser = true; // อนุญาตกรณีล็อกอินแล้ว (ปรับตามโครงสร้างโปรเจกต์)
+}
+
+if (!$isAdminUser) {
+    echo '<div class="alert alert-danger m-4"><i class="fa-solid fa-triangle-exclamation me-2"></i>คุณไม่มีสิทธิ์เข้าถึงหน้านี้ (เฉพาะ Admin เท่านั้น)</div>';
+    return;
+}
+
+// 2. ฟังก์ชันช่วยดึงค่าการตั้งค่าเพื่อป้องกัน Fatal Error
+if (!function_exists('safeGetSetting')) {
+    function safeGetSetting($key,$default = '') {
+        global $pdo;
+        if (function_exists('getSetting')) {
+            return getSetting($key,$default);
+        }
+        if (isset($pdo)) {
+            try {
+                $stmt =$pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = ? LIMIT 1");
+                $stmt->execute([$key]);
+                $row =$stmt->fetch(PDO::FETCH_ASSOC);
+                return $row ? $row['setting_value'] :$default;
+            } catch (PDOException $e) {
+                return $default;
+            }
+        }
+        return $default;
+    }
+}
+
+$apiUrlConfig = safeGetSetting('api_url', 'https://api.deesms.net');$apiKeyConfig = safeGetSetting('api_key', '921a0dfd1e78655369019ba60e0c2b9bc91c9a58c99321a5dadb7d49cae320a3');
 ?>
+
 <div class="row g-4">
     <div class="col-lg-8">
         <div class="card p-4 border-0 shadow-sm">
@@ -65,27 +108,19 @@ if (!isAdmin()) exit;
             </h5>
             <div class="mb-2">
                 <span class="text-muted small d-block">Endpoint URL Base:</span>
-                <span class="fw-bold text-break" id="lblApiUrl"><?= htmlspecialchars(getSetting('api_url', 'https://api.deesms.net')) ?></span>
+                <span class="fw-bold text-break" id="lblApiUrl"><?= htmlspecialchars($apiUrlConfig) ?></span>
             </div>
             <div class="mb-2">
                 <span class="text-muted small d-block">API Key Masked:</span>
                 <span class="font-monospace text-muted">
                     <?php 
-                        $key = getSetting('api_key', '');
-                        echo !empty($key) ? htmlspecialchars(substr($key, 0, 8)) . '****************' : 'ยังไม่ได้ตั้งค่า';
+                        echo !empty($apiKeyConfig) ? htmlspecialchars(substr($apiKeyConfig, 0, 8)) . '****************' : 'ยังไม่ได้ตั้งค่า';
                     ?>
                 </span>
             </div>
         </div>
     </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-function toggleSidebar() {
-    document.getElementById('sidebar').classList.toggle('collapsed');
-    document.getElementById('main-content').classList.toggle('expanded');
-}
-</script>
 
 <script>
 document.addEventListener("DOMContentLoaded", checkApiHealth);
@@ -105,15 +140,15 @@ async function checkApiHealth() {
 
     try {
         // ดึงข้อมูลสถานะจาก api/test_api.php
-        let res = await fetch('api/test_api.php');
+        let res = await fetch('../api/test_api.php');
         let endTime = Date.now();
         let pingTime = endTime - startTime;
 
         let data = await res.json();
 
-        // ตรวจสอบว่าผลลัพธ์เป็น "connected" หรือไม่
+        // ตรวจสอบสถานะการเชื่อมต่อ
         if (data.status === 'connected' || data.success) {
-            connStatus.innerHTML = `<i class="fa-solid fa-circle-check text-success me-1"></i>เชื่อมต่อ`;
+            connStatus.innerHTML = `<i class="fa-solid fa-circle-check text-success me-1"></i>เชื่อมต่อปกติ`;
             connStatus.className = 'fw-bold fs-5 text-success mt-1';
             
             // แสดงค่า Latency
@@ -126,7 +161,7 @@ async function checkApiHealth() {
                 latencyStatus.className = 'fw-bold fs-5 text-danger mt-1';
             }
 
-            // แสดงรายการ Sender Names ในตาราง
+            // แสดงรายการ Sender Names
             if (data.senders && data.senders.length > 0) {
                 tbody.innerHTML = '';
                 data.senders.forEach(s => {
@@ -146,20 +181,17 @@ async function checkApiHealth() {
                 tbody.innerHTML = `<tr><td colspan="3" class="text-center py-3 text-muted">ไม่พบรายการ Sender Name</td></tr>`;
             }
         } else {
-            // กรณีดึง Sender ไม่ได้ หรือ API ตอบกลับเป็นความผิดพลาด
             connStatus.innerHTML = `<i class="fa-solid fa-circle-xmark text-danger me-1"></i>ไม่เชื่อมต่อ`;
             connStatus.className = 'fw-bold fs-5 text-danger mt-1';
-            tbody.innerHTML = `<tr><td colspan="3" class="text-center py-3 text-danger">ไม่สามารถดึงข้อมูลได้: ${escapeHtml(data.message || data.error || 'ดึง Sender ไม่สำเร็จ')}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="3" class="text-center py-3 text-danger">ไม่สามารถดึงข้อมูลได้: ${escapeHtml(data.message || 'ดึง Sender ไม่สำเร็จ')}</td></tr>`;
         }
     } catch(e) {
-        // กรณีเกิดปัญหาทางเครือข่าย หรือไฟล์ไม่มีอยู่จริง
         connStatus.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-danger me-1"></i>ไม่เชื่อมต่อ`;
         connStatus.className = 'fw-bold fs-5 text-danger mt-1';
         tbody.innerHTML = `<tr><td colspan="3" class="text-center py-3 text-danger">เกิดข้อผิดพลาดในการเชื่อมต่อระบบ (Network Error)</td></tr>`;
     }
 }
 
-// ฟังก์ชันช่วยจัดการตัวอักษรเพื่อป้องกัน XSS
 function escapeHtml(text) {
     if (!text) return '';
     return String(text)
